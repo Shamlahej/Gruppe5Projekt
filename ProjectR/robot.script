@@ -1,0 +1,161 @@
+def group5_minimal():
+
+  # 0 = manual mode (run forever)
+  # >0 = run exactly N cycles
+  max_cycles = {{MAX_CYCLES}}
+  cycles_done = 0
+
+  rg = rpc_factory("xmlrpc", "http://172.20.254.102:41414")
+
+  set_tool_voltage(24)
+  set_tool_communication(True, 1000000, 2, 1, 1.5, 3.5)
+
+  # STOP = DI6
+  def stop_requested():
+    return get_standard_digital_in(6)
+  end
+
+  def rg_wait_done(tool=0, timeout_s=1.0):
+    local t = 0.0
+    while (rg.rg_get_busy(tool) == False) and (t < timeout_s):
+      sleep(0.01)
+      t = t + 0.01
+    end
+    while (rg.rg_get_busy(tool) == True) and (t < timeout_s):
+      sleep(0.01)
+      t = t + 0.01
+    end
+  end
+
+  def rg_wait_grip_detected(tool=0, timeout_s=1.0):
+    local t = 0.0
+    while (rg.rg_get_grip_detected(tool) == False) and (t < timeout_s):
+      sleep(0.01)
+      t = t + 0.01
+    end
+  end
+
+  # --- Poses (UÆNDRET) ---
+  p_home_p          = p[-.130588180302, -.295899334319, .471525063587, 2.538953616766, .006610044824, .001324343615]
+  p_home_q          = [-1.5685136953936976, -1.5705312532121134, -0.09931756556034088, -1.9143811664977015, 1.576417088508606, 3.135735511779785]
+
+  p_over_pick_p     = p[.340451962787, -.433334865424, -.017477824898, 2.218850096475, 2.149616197780, .075468055928]
+  p_over_pick_q     = [-0.7867682615863245, -2.4849330387511195, -0.901721715927124, -0.866143063907959, 1.9705028533935547, 2.4793202877044678]
+
+  p_pick_p          = p[.340451962729, -.433334865365, -.115639468792, 2.218850096475, 2.149616197780, .075468055930]
+
+  neutral_with_p_p  = p[.340451962068, -.433334865344, .086697045362, 2.218850170839, 2.149616121031, .075467950671]
+  neutral_with_p_q  = [-0.786793798504485, -2.488207274637718, -0.4013883227645296, -1.363893328426343, 1.9697480758827748, 2.477537806935821]
+
+  p_over_place_p    = p[-.453386758745, -.315263234695, .086095190004, 3.077038903231, -.135726536246, -.021572336942]
+  p_over_place_q    = [-2.407602612172262, -2.4877287350096644, -0.4015474021434784, -1.3633253288320084, 1.9543707370758057, 2.4775595664978027]
+
+  p_place_ok_p      = p[-.453386755596, -.315263234320, -.063202849130, 3.077038857839, -.135726481854, -.021572271553]
+
+  p_neutral_p       = p[-.163517935166, -.464288138130, .140802892842, 3.042814864523, -.036887851022, .030344639250]
+  p_neutral_q       = [-1.6678016821490687, -1.95436491588735, -1.1173654794692993, -1.0192778271487732, 1.6360406875610352, 3.091822624206543]
+
+  aJ = 1.3962634015954636
+  vJ = 1.0471975511965976
+  aL = 1.2
+  vL = 0.25
+
+  stop_latched = False
+
+  # Kør conveyor 60 sek og stop ALT (ingen popups)
+  def security_stop():
+    set_standard_digital_out(7, True)
+    sleep(60.0)
+    set_standard_digital_out(7, False)
+    halt
+  end
+
+  while True:
+
+    # Home (safe point)
+    movej(get_inverse_kin(p_home_p, qnear=p_home_q), a=aJ, v=vJ)
+
+    # Hvis stop allerede aktivt når vi rammer home -> kør security og stop
+    if (stop_requested()):
+      security_stop()
+    end
+
+    # Gripper open
+    rg.rg_grip(0, 75.0, 40.0)
+    rg_wait_done(tool=0, timeout_s=1.0)
+
+    # Conveyor ON og vent på DI4 (max 60 sek)
+    set_standard_digital_out(7, True)
+    t_wait = 0
+
+    while (get_standard_digital_in(4) == False):
+      sleep(0.1)
+      t_wait = t_wait + 1
+
+      # Stop trykket mens vi venter -> latch, stop conveyor nu, men stop først efter cyklus/home
+      if (stop_requested()):
+        stop_latched = True
+        set_standard_digital_out(7, False)
+      end
+
+      # Timeout 60s uden del -> stop alt (ingen popups)
+      if (t_wait >= 600):
+        set_standard_digital_out(7, False)
+        halt
+      end
+    end
+
+    # Conveyor OFF når del er klar
+    set_standard_digital_out(7, False)
+
+    # Pick
+    movej(get_inverse_kin(p_over_pick_p, qnear=p_over_pick_q), a=aJ, v=vJ)
+    movel(p_pick_p, a=aL, v=vL)
+
+    rg.rg_grip(0, 16.7, 40.0)
+    rg_wait_done(tool=0, timeout_s=1.0)
+    rg_wait_grip_detected(tool=0, timeout_s=1.0)
+
+    # Neutral
+    movel(neutral_with_p_p, a=aL, v=vL)
+
+    # Place
+    movej(get_inverse_kin(p_over_place_p, qnear=p_over_place_q), a=aJ, v=vJ)
+    movel(p_place_ok_p, a=aL, v=vL)
+
+    # Release
+    rg.rg_grip(0, 55.2, 21.0)
+    rg_wait_done(tool=0, timeout_s=1.0)
+
+    # Vent DI4 low igen
+    while (get_standard_digital_in(4) == True):
+      sync()
+    end
+
+    # Neutral/home-ish
+    movej(get_inverse_kin(p_neutral_p, qnear=p_neutral_q), a=aJ, v=vJ)
+
+    # Cycle done
+    cycles_done = cycles_done + 1
+
+    # Stop requested i løbet af cyklus
+    if (stop_requested()):
+      stop_latched = True
+    end
+
+    # Stop efter cyklus + home + security
+    if (stop_latched):
+      movej(get_inverse_kin(p_home_p, qnear=p_home_q), a=aJ, v=vJ)
+      security_stop()
+    end
+
+    # Batch done -> home + security + stop
+    if (max_cycles > 0) and (cycles_done >= max_cycles):
+      movej(get_inverse_kin(p_home_p, qnear=p_home_q), a=aJ, v=vJ)
+      security_stop()
+    end
+
+  end
+end
+
+group5_minimal()
